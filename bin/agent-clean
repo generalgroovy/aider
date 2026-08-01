@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LIB="${AIDER_AGENT_LIB_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aider-agent}"
+if [[ -f "$LIB/lib.sh" ]]; then
+    source "$LIB/lib.sh"
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$DIR/../scripts/lib.sh"
+fi
+
+[[ "${1:-}" != "-h" && "${1:-}" != "--help" ]] || {
+    printf 'Usage: agent-clean WORKSPACE\n'
+    exit 0
+}
+
+agent_load_config
+agent_require git realpath
+[[ -n "${1:-}" ]] || {
+    printf 'Usage: agent-clean WORKSPACE\n'
+    exit 64
+}
+
+workspace="$(agent_realpath "$1")"
+case "$workspace" in
+    "$AGENT_WORKSPACE_ROOT"/*) ;;
+    *) agent_die "workspace is outside $AGENT_WORKSPACE_ROOT"; exit 64 ;;
+esac
+
+branch="$(git -C "$workspace" branch --show-current)"
+agent_branch_allowed "$branch" || {
+    agent_die "unexpected branch: $branch"
+    exit 64
+}
+
+if [[ -n "$(git -C "$workspace" status --porcelain)" ]]; then
+    git -C "$workspace" status --short --branch
+    agent_die "refusing dirty workspace"
+    exit 1
+fi
+
+local_sha="$(git -C "$workspace" rev-parse HEAD)"
+remote_sha="$(git -C "$workspace" ls-remote --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
+[[ -n "$remote_sha" && "$local_sha" == "$remote_sha" ]] || {
+    agent_die "branch is not fully pushed"
+    exit 1
+}
+
+main_repo="$(git -C "$workspace" worktree list --porcelain | awk '/^worktree / {print substr($0,10); exit}')"
+[[ -n "$main_repo" && -d "$main_repo" ]] || {
+    agent_die "could not resolve primary worktree"
+    exit 1
+}
+
+git -C "$main_repo" worktree unlock "$workspace" 2>/dev/null || true
+git -C "$main_repo" worktree remove "$workspace"
+git -C "$main_repo" worktree prune
+printf 'Removed local workspace; retained remote branch %s\n' "$branch"
