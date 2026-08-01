@@ -13,7 +13,9 @@ for file in "${files[@]}"; do
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck -x "${files[@]}"
+    # Installed commands intentionally resolve lib.sh at runtime from either
+    # ~/.config/aider-agent or the source tree.
+    shellcheck -x -e SC1091 "${files[@]}"
 else
     printf 'WARN: shellcheck unavailable; Bash syntax still validated.\n'
 fi
