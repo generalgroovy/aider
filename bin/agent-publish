@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LIB="${AIDER_AGENT_LIB_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aider-agent}"
+if [[ -f "$LIB/lib.sh" ]]; then
+    source "$LIB/lib.sh"
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$DIR/../scripts/lib.sh"
+fi
+
+[[ "${1:-}" != "-h" && "${1:-}" != "--help" ]] || {
+    printf 'Usage: agent-publish [WORKSPACE]\n'
+    exit 0
+}
+
+agent_load_config
+agent_require git gh realpath
+workspace="$(agent_realpath "${1:-$PWD}")"
+case "$workspace" in
+    "$AGENT_WORKSPACE_ROOT"/*) ;;
+    *) agent_die "workspace is outside $AGENT_WORKSPACE_ROOT"; exit 64 ;;
+esac
+
+branch="$(git -C "$workspace" branch --show-current)"
+agent_branch_allowed "$branch" || {
+    agent_die "unexpected branch: $branch"
+    exit 64
+}
+
+if [[ -n "$(git -C "$workspace" status --porcelain)" ]]; then
+    git -C "$workspace" status --short --branch
+    agent_die "workspace is dirty"
+    exit 1
+fi
+
+git -C "$workspace" fetch --prune origin
+git -C "$workspace" push --set-upstream origin "$branch"
+base="$(git -C "$workspace" config --get "branch.$branch.gh-merge-base" || (cd "$workspace" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'))"
+
+cd "$workspace"
+existing="$(gh pr view --json url --jq '.url' 2>/dev/null || true)"
+if [[ -n "$existing" ]]; then
+    printf 'Existing pull request: %s\n' "$existing"
+else
+    gh pr create --draft --base "$base" --head "$branch" --fill
+fi
