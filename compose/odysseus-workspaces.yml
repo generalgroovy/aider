@@ -1,6 +1,6 @@
 services:
   odysseus:
     volumes:
-      - ${AGENT_WORKSPACE_ROOT:-${HOME}/AgentWorkspaces}:/workspace:rw
+      - ${AGENT_WORKSPACE_ROOT}:/workspace:rw
     extra_hosts:
       - "host.docker.internal:host-gateway"
