@@ -24,14 +24,26 @@ section() { printf '\n=== %s ===\n' "$1"; }
 
 section Commands
 for command_name in git gh docker ollama curl tmux ssh realpath; do
-    command -v "$command_name" >/dev/null 2>&1 && ok "$command_name" || fail "missing $command_name"
+    if command -v "$command_name" >/dev/null 2>&1; then
+        ok "$command_name"
+    else
+        fail "missing $command_name"
+    fi
 done
 
 section GitHub
-gh auth status --hostname github.com >/dev/null 2>&1 && ok authenticated || fail unauthenticated
+if gh auth status --hostname github.com >/dev/null 2>&1; then
+    ok authenticated
+else
+    fail unauthenticated
+fi
 
 section Docker
-docker info >/dev/null 2>&1 && ok reachable || fail "not reachable by current user"
+if docker info >/dev/null 2>&1; then
+    ok reachable
+else
+    fail "not reachable by current user"
+fi
 
 section Ollama
 if curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >"$(agent_state_dir)/models.json"; then
@@ -42,18 +54,30 @@ else
 fi
 
 section Odysseus
-[[ -d "$ODYSSEUS_DIR" ]] && ok "$ODYSSEUS_DIR" || fail "missing $ODYSSEUS_DIR"
+if [[ -d "$ODYSSEUS_DIR" ]]; then
+    ok "$ODYSSEUS_DIR"
+else
+    fail "missing $ODYSSEUS_DIR"
+fi
 if agent_compose config --services 2>/dev/null | grep -Fxq "$ODYSSEUS_SERVICE"; then
     ok "service $ODYSSEUS_SERVICE"
 else
     fail "service $ODYSSEUS_SERVICE missing"
 fi
 agent_compose ps 2>/dev/null || true
-curl -fsS --max-time 3 "$ODYSSEUS_URL" >/dev/null 2>&1 && ok "$ODYSSEUS_URL" || warn "not currently responding"
+if curl -fsS --max-time 3 "$ODYSSEUS_URL" >/dev/null 2>&1; then
+    ok "$ODYSSEUS_URL"
+else
+    warn "not currently responding"
+fi
 
 section Workspace
 install -d -m 0700 "$AGENT_WORKSPACE_ROOT"
-[[ -w "$AGENT_WORKSPACE_ROOT" ]] && ok "$AGENT_WORKSPACE_ROOT" || fail "not writable"
+if [[ -w "$AGENT_WORKSPACE_ROOT" ]]; then
+    ok "$AGENT_WORKSPACE_ROOT"
+else
+    fail "not writable"
+fi
 
 section Memory
 free -h || true
