@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LIB="${AIDER_AGENT_LIB_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aider-agent}"
+if [[ -f "$LIB/lib.sh" ]]; then
+    source "$LIB/lib.sh"
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$DIR/../scripts/lib.sh"
+fi
+
+[[ "${1:-}" != "-h" && "${1:-}" != "--help" ]] || {
+    printf 'Usage: agent-status\n'
+    exit 0
+}
+
+agent_load_config
+printf '=== Services ===\n'
+systemctl is-active docker 2>/dev/null || true
+systemctl is-active ollama 2>/dev/null || true
+systemctl is-active sshd 2>/dev/null || true
+
+printf '\n=== Memory ===\n'
+free -h || true
+
+printf '\n=== Ollama ===\n'
+ollama ps 2>/dev/null || true
+ollama list 2>/dev/null || true
+
+printf '\n=== Odysseus ===\n'
+agent_compose ps 2>/dev/null || true
+
+printf '\n=== Workspaces ===\n'
+find "$AGENT_WORKSPACE_ROOT" -mindepth 2 -maxdepth 2 -type d -print 2>/dev/null | sort || true
+
+printf '\n=== tmux ===\n'
+tmux list-sessions 2>/dev/null || true
+
+printf '\n=== Gateway ===\n'
+if [[ -x /usr/local/sbin/odysseus-admin ]]; then
+    printf 'installed\n'
+else
+    printf 'not installed\n'
+fi

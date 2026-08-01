@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+LIB="${AIDER_AGENT_LIB_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aider-agent}"
+if [[ -f "$LIB/lib.sh" ]]; then
+    source "$LIB/lib.sh"
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$DIR/../scripts/lib.sh"
+fi
+
+usage() {
+    cat <<'EOF'
+Usage:
+  agent-project github OWNER/REPO
+  agent-project github REPO
+  agent-project local PATH
+  agent-project new REPO [private|public]
+  agent-project list
+EOF
+}
+
+slug() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g;s/^-+//;s/-+$//'
+}
+
+base_branch() {
+    gh repo view "$1" --json defaultBranchRef --jq '.defaultBranchRef.name'
+}
+
+initialize_policy() {
+    local workspace="$1"
+    mkdir -p "$workspace/.agent"
+    [[ -f "$workspace/AGENTS.md" ]] || printf '%s\n' \
+        '# Local agent contract' '' \
+        'Work only on this agent branch. Preserve unrelated work. Never force-push, merge, expose credentials, or access unrelated host paths. Validate, log, commit, push, report, and stop for review.' \
+        >"$workspace/AGENTS.md"
+    [[ -f "$workspace/.agent/PLAN.md" ]] || printf '# Plan\n\nNo approved slice.\n' >"$workspace/.agent/PLAN.md"
+    [[ -f "$workspace/.agent/WORKLOG.md" ]] || printf '# Worklog\n' >"$workspace/.agent/WORKLOG.md"
+    [[ -f "$workspace/.agent/HANDOFF.md" ]] || printf '# Handoff\n\nInspect repository next.\n' >"$workspace/.agent/HANDOFF.md"
+    [[ -f "$workspace/.agent/COMMANDS.log" ]] || : >"$workspace/.agent/COMMANDS.log"
+}
+
+create_workspace() {
+    local repo="$1" project="$2" full_name="$3" base="$4"
+    git -C "$repo" fetch --prune origin
+    git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$base" || {
+        agent_die "missing origin/$base"
+        return 1
+    }
+
+    local stamp branch workspace
+    stamp="$(date +%Y%m%d-%H%M%S)-$$"
+    branch="agent/odysseus-$stamp"
+    workspace="$AGENT_WORKSPACE_ROOT/$project/$stamp"
+    mkdir -p "$(dirname "$workspace")"
+
+    git -C "$repo" worktree add \
+        --lock \
+        --reason "Odysseus workspace" \
+        -b "$branch" \
+        "$workspace" \
+        "origin/$base"
+
+    initialize_policy "$workspace"
+    git -C "$workspace" add AGENTS.md .agent
+    git -C "$workspace" diff --cached --quiet || \
+        git -C "$workspace" commit -m "Initialize transparent agent workspace"
+    git -C "$workspace" config "branch.$branch.gh-merge-base" "$base"
+    git -C "$workspace" push --set-upstream origin "$branch"
+
+    printf '\nGitHub: %s\nHuman clone: %s\nAgent path: %s\nContainer: /workspace/%s/%s\nBranch: %s\nBase: %s\n' \
+        "$full_name" "$repo" "$workspace" "$project" "$stamp" "$branch" "$base"
+}
+
+from_github() {
+    local full_name="$1"
+    [[ "$full_name" == */* ]] || full_name="$GITHUB_OWNER/$full_name"
+    gh repo view "$full_name" >/dev/null 2>&1 || {
+        agent_die "inaccessible repository: $full_name"
+        return 1
+    }
+
+    local project repo base
+    project="$(slug "${full_name##*/}")"
+    repo="$PROJECTS_ROOT/$project"
+    base="$(base_branch "$full_name")"
+
+    if [[ -e "$repo" && ! -d "$repo/.git" ]]; then
+        agent_die "non-Git path exists: $repo"
+        return 1
+    fi
+    [[ -d "$repo/.git" ]] || gh repo clone "$full_name" "$repo"
+    create_workspace "$repo" "$project" "$full_name" "$base"
+}
+
+from_local() {
+    local repo full_name project base
+    repo="$(agent_realpath "$1")"
+    git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        agent_die "not a Git repository: $repo"
+        return 1
+    }
+    full_name="$(cd "$repo" && gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+    project="$(slug "$(basename "$repo")")"
+    base="$(base_branch "$full_name")"
+    create_workspace "$repo" "$project" "$full_name" "$base"
+}
+
+new_repository() {
+    local requested="$1" visibility="${2:-private}"
+    [[ "$visibility" == "private" || "$visibility" == "public" ]] || {
+        agent_die "visibility must be private or public"
+        return 1
+    }
+
+    local project full_name repo
+    project="$(slug "$requested")"
+    full_name="$GITHUB_OWNER/$project"
+    repo="$PROJECTS_ROOT/$project"
+    [[ ! -e "$repo" ]] || {
+        agent_die "path exists: $repo"
+        return 1
+    }
+    if gh repo view "$full_name" >/dev/null 2>&1; then
+        agent_die "remote exists: $full_name"
+        return 1
+    fi
+
+    mkdir -p "$repo"
+    git -C "$repo" init -b main
+    printf '# %s\n' "$project" >"$repo/README.md"
+    printf '.env\n*.log\nnode_modules/\n.venv/\n' >"$repo/.gitignore"
+    git -C "$repo" add .
+    git -C "$repo" commit -m "Initialize repository"
+    gh repo create "$full_name" "--$visibility" --source "$repo" --remote origin --push
+    create_workspace "$repo" "$project" "$full_name" main
+}
+
+agent_load_config
+case "${1:-}" in
+    -h|--help)
+        usage
+        ;;
+    github)
+        agent_require git gh realpath sed
+        gh auth status >/dev/null
+        mkdir -p "$PROJECTS_ROOT" "$AGENT_WORKSPACE_ROOT"
+        [[ -n "${2:-}" ]] || { usage; exit 64; }
+        from_github "$2"
+        ;;
+    local)
+        agent_require git gh realpath sed
+        gh auth status >/dev/null
+        mkdir -p "$PROJECTS_ROOT" "$AGENT_WORKSPACE_ROOT"
+        [[ -n "${2:-}" ]] || { usage; exit 64; }
+        from_local "$2"
+        ;;
+    new)
+        agent_require git gh realpath sed
+        gh auth status >/dev/null
+        mkdir -p "$PROJECTS_ROOT" "$AGENT_WORKSPACE_ROOT"
+        [[ -n "${2:-}" ]] || { usage; exit 64; }
+        new_repository "$2" "${3:-private}"
+        ;;
+    list)
+        find "$AGENT_WORKSPACE_ROOT" -mindepth 2 -maxdepth 2 -type d -print 2>/dev/null | sort
+        ;;
+    *)
+        usage
+        exit 64
+        ;;
+esac
