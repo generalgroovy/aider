@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LIB="${AIDER_AGENT_LIB_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aider-agent}"
+if [[ -f "$LIB/lib.sh" ]]; then
+    source "$LIB/lib.sh"
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$DIR/../scripts/lib.sh"
+fi
+
+usage() { printf 'Usage: agent-run [--no-browser] [--no-tmux]\n'; }
+browser=1
+use_tmux=1
+while (($#)); do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --no-browser) browser=0 ;;
+        --no-tmux) use_tmux=0 ;;
+        *) agent_die "unknown option: $1"; exit 64 ;;
+    esac
+    shift
+done
+
+agent_load_config
+agent_require docker curl
+curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null || {
+    agent_die "Ollama is unavailable on 127.0.0.1:11434"
+    exit 1
+}
+
+agent_compose up -d
+ready=0
+for _ in {1..60}; do
+    if curl -fsS --max-time 2 "$ODYSSEUS_URL" >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if ((ready == 0)); then
+    agent_compose logs --tail=150 "$ODYSSEUS_SERVICE" >&2 || true
+    agent_die "Odysseus is unavailable at $ODYSSEUS_URL"
+    exit 1
+fi
+
+if ((browser == 1)) && [[ "$AGENT_OPEN_BROWSER" == "1" ]] && command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$ODYSSEUS_URL" >/dev/null 2>&1 &
+fi
+
+if ((use_tmux == 0)); then
+    agent_compose logs -f --tail=100 "$ODYSSEUS_SERVICE"
+    exit $?
+fi
+
+agent_require tmux systemd-inhibit
+printf -v command_line \
+    'exec systemd-inhibit --what=sleep:idle --who=odysseus --why=%q --mode=block docker compose -f %q -f %q --project-directory %q logs -f --tail=100 %q' \
+    "Interactive local agent session" \
+    "$ODYSSEUS_DIR/docker-compose.yml" \
+    "$(agent_overlay_file)" \
+    "$ODYSSEUS_DIR" \
+    "$ODYSSEUS_SERVICE"
+
+exec tmux new-session -A -s "$AGENT_TMUX_SESSION" "$command_line"
