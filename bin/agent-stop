@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LIB="${AIDER_AGENT_LIB_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aider-agent}"
+if [[ -f "$LIB/lib.sh" ]]; then
+    source "$LIB/lib.sh"
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$DIR/../scripts/lib.sh"
+fi
+
+[[ "${1:-}" != "-h" && "${1:-}" != "--help" ]] || {
+    printf 'Usage: agent-stop [--keep-models]\n'
+    exit 0
+}
+
+keep_models=0
+case "${1:-}" in
+    --keep-models) keep_models=1 ;;
+    "") ;;
+    *) agent_die "unknown option: $1"; exit 64 ;;
+esac
+
+agent_load_config
+agent_compose stop
+
+if ((keep_models == 0)) && [[ "$AGENT_UNLOAD_MODELS_ON_STOP" == "1" ]]; then
+    ollama stop "$AGENT_UTILITY_MODEL" 2>/dev/null || true
+    ollama stop "$AGENT_EXECUTOR_MODEL" 2>/dev/null || true
+    ollama stop "$AGENT_REVIEWER_MODEL" 2>/dev/null || true
+fi
+
+printf 'Odysseus stopped.\n'
