@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LIB="${AIDER_AGENT_LIB_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/aider-agent}"
+if [[ -f "$LIB/lib.sh" ]]; then
+    source "$LIB/lib.sh"
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$DIR/../scripts/lib.sh"
+fi
+
+[[ "${1:-}" != "--help" && "${1:-}" != "-h" ]] || {
+    printf 'Usage: agent-doctor\n'
+    exit 0
+}
+
+agent_load_config
+mkdir -p "$(agent_state_dir)"
+failures=0
+ok() { printf '[OK] %s\n' "$*"; }
+fail() { printf '[FAIL] %s\n' "$*"; failures=$((failures + 1)); }
+warn() { printf '[WARN] %s\n' "$*"; }
+section() { printf '\n=== %s ===\n' "$1"; }
+
+section Commands
+for command_name in git gh docker ollama curl tmux ssh realpath; do
+    command -v "$command_name" >/dev/null 2>&1 && ok "$command_name" || fail "missing $command_name"
+done
+
+section GitHub
+gh auth status --hostname github.com >/dev/null 2>&1 && ok authenticated || fail unauthenticated
+
+section Docker
+docker info >/dev/null 2>&1 && ok reachable || fail "not reachable by current user"
+
+section Ollama
+if curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >"$(agent_state_dir)/models.json"; then
+    ok "responds on localhost"
+    ollama list || true
+else
+    fail "not responding on localhost"
+fi
+
+section Odysseus
+[[ -d "$ODYSSEUS_DIR" ]] && ok "$ODYSSEUS_DIR" || fail "missing $ODYSSEUS_DIR"
+if agent_compose config --services 2>/dev/null | grep -Fxq "$ODYSSEUS_SERVICE"; then
+    ok "service $ODYSSEUS_SERVICE"
+else
+    fail "service $ODYSSEUS_SERVICE missing"
+fi
+agent_compose ps 2>/dev/null || true
+curl -fsS --max-time 3 "$ODYSSEUS_URL" >/dev/null 2>&1 && ok "$ODYSSEUS_URL" || warn "not currently responding"
+
+section Workspace
+install -d -m 0700 "$AGENT_WORKSPACE_ROOT"
+[[ -w "$AGENT_WORKSPACE_ROOT" ]] && ok "$AGENT_WORKSPACE_ROOT" || fail "not writable"
+
+section Memory
+free -h || true
+ollama ps || true
+
+printf '\n%d blocking failure(s)\n' "$failures"
+((failures == 0))
