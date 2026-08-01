@@ -17,7 +17,9 @@ install -m 0644 "$ROOT/compose/odysseus-workspaces.yml" "$CONFIG/odysseus-worksp
 [[ -f "$CONFIG/agent.env" ]] ||
     install -m 0600 "$ROOT/config/agent.env.example" "$CONFIG/agent.env"
 
-command -v fish >/dev/null 2>&1 && fish -c "fish_add_path '$BIN'" || true
+if command -v fish >/dev/null 2>&1; then
+    fish -c "fish_add_path '$BIN'" || true
+fi
 
 printf 'Installed commands in %s\nConfiguration: %s/agent.env\n' "$BIN" "$CONFIG"
 printf 'Next: exec fish; agent-doctor\n'
